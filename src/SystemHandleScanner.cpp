@@ -128,6 +128,11 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
         // Get a reference to the current handle entry
         SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX entry = handleInfo->Handles[i];
         
+        // Skip System process (PID 4) handles as querying them often causes the OS to hang indefinitely
+        if (entry.UniqueProcessId == 4) {
+            continue;
+        }
+
         // Skip handles with specific access rights that could cause the system to hang if queried
         if (entry.GrantedAccess == 0x0012019f || entry.GrantedAccess == 0x001A019F || entry.GrantedAccess == 0x120189) {
             continue;
