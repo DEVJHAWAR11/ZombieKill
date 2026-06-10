@@ -1,6 +1,6 @@
 # 🧟‍♂️ ZombieKill: The Unstuck Forced File Unlocker
 
-![Folder In Use Error](download.png)
+<img src="download.png" alt="Folder In Use Error" width="400">
 
 ## 🛑 The Error You Are Getting:
 If you are reading this, you are probably incredibly frustrated by this exact Windows error message:
