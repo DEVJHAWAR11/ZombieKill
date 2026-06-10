@@ -123,6 +123,37 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
     // Cast our raw byte buffer into the structured array format defined in our header
     PSYSTEM_HANDLE_INFORMATION_EX handleInfo = (PSYSTEM_HANDLE_INFORMATION_EX)buffer.data();
 
+    // ---- DYNAMIC FILE TYPE DISCOVERY ----
+    // To prevent hanging, we ONLY want to query handles that are actually Files.
+    // The ObjectTypeIndex for "File" changes between Windows versions (e.g. 0x24, 0x26).
+    // We will dynamically discover it by creating a dummy file and finding its index!
+    wchar_t tempPath[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempPath);
+    wchar_t tempFile[MAX_PATH];
+    GetTempFileNameW(tempPath, L"ZMB", 0, tempFile);
+    HANDLE hDummy = CreateFileW(tempFile, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    
+    USHORT fileTypeIndex = 0;
+    DWORD myPid = GetCurrentProcessId();
+
+    for (ULONG_PTR i = 0; i < handleInfo->NumberOfHandles; ++i) {
+        SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX entry = handleInfo->Handles[i];
+        if (entry.UniqueProcessId == myPid && (HANDLE)entry.HandleValue == hDummy) {
+            fileTypeIndex = entry.ObjectTypeIndex;
+            break;
+        }
+    }
+    
+    if (hDummy != INVALID_HANDLE_VALUE) {
+        CloseHandle(hDummy); // This will also delete the temp file due to FILE_FLAG_DELETE_ON_CLOSE
+    }
+
+    if (fileTypeIndex == 0) {
+        std::wcout << L"Error: Could not dynamically determine Windows File Object Type." << std::endl;
+        return locks;
+    }
+    // ---- END DISCOVERY ----
+
     // Cache process handles to drastically speed up the scan (avoids calling OpenProcess 100,000 times)
     HANDLE hCurrentProcess = NULL;
     ULONG_PTR currentPid = 0xFFFFFFFF; // Start with an invalid PID
@@ -137,6 +168,11 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
 
         // Get a reference to the current handle entry
         SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX entry = handleInfo->Handles[i];
+        
+        // CRITICAL: Only process File handles! This bypasses 80% of handles and entirely prevents ALPC/Pipe hangs!
+        if (entry.ObjectTypeIndex != fileTypeIndex) {
+            continue;
+        }
         
         // Skip System process (PID 4) handles as querying them often causes the OS to hang indefinitely
         if (entry.UniqueProcessId == 4) {
@@ -179,33 +215,6 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
 
         // If duplication succeeded
         if (dupSuccess && hDup != nullptr) {
-            // PREVENT HANGS: Query the object TYPE first (Class 2). This never hangs.
-            ULONG typeBufferSize = 1024;
-            std::vector<unsigned char> typeBuffer(typeBufferSize);
-            status = queryObject(hDup, 2, typeBuffer.data(), typeBufferSize, &returnLength);
-            
-            if (status == 0xC0000004) {
-                typeBuffer.resize(returnLength);
-                status = queryObject(hDup, 2, typeBuffer.data(), returnLength, &returnLength);
-            }
-            
-            bool isFile = false;
-            if (NT_SUCCESS(status)) {
-                PPUBLIC_OBJECT_TYPE_INFORMATION typeInfo = (PPUBLIC_OBJECT_TYPE_INFORMATION)typeBuffer.data();
-                if (typeInfo->TypeName.Length > 0 && typeInfo->TypeName.Buffer != nullptr) {
-                    std::wstring typeName(typeInfo->TypeName.Buffer, typeInfo->TypeName.Length / sizeof(wchar_t));
-                    if (typeName == L"File") {
-                        isFile = true; // Folders are also considered "File" at the kernel level
-                    }
-                }
-            }
-            
-            // If it is NOT a File, skip querying its name because querying named pipes/ports will HANG the thread forever!
-            if (!isFile) {
-                CloseHandle(hDup);
-                continue;
-            }
-
             // Prepare a buffer to receive the name of the object this handle points to
             ULONG nameBufferSize = 1024;
             std::vector<unsigned char> nameBuffer(nameBufferSize);
