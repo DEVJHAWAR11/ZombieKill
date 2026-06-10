@@ -93,6 +93,13 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
     // Convert the target path to lowercase for case-insensitive comparison later
     std::transform(nativeTargetPath.begin(), nativeTargetPath.end(), nativeTargetPath.begin(), ::towlower);
 
+    // ---- DYNAMIC FILE TYPE DISCOVERY (Step 1: Create a dummy file BEFORE taking the OS snapshot) ----
+    wchar_t tempPath[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempPath);
+    wchar_t tempFile[MAX_PATH];
+    GetTempFileNameW(tempPath, L"ZMB", 0, tempFile);
+    HANDLE hDummy = CreateFileW(tempFile, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+
     // Start with an initial buffer size of 1 Megabyte for the OS handle table
     ULONG bufferSize = 1024 * 1024;
     // Allocate raw memory for the buffer
@@ -123,15 +130,7 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
     // Cast our raw byte buffer into the structured array format defined in our header
     PSYSTEM_HANDLE_INFORMATION_EX handleInfo = (PSYSTEM_HANDLE_INFORMATION_EX)buffer.data();
 
-    // ---- DYNAMIC FILE TYPE DISCOVERY ----
-    // To prevent hanging, we ONLY want to query handles that are actually Files.
-    // The ObjectTypeIndex for "File" changes between Windows versions (e.g. 0x24, 0x26).
-    // We will dynamically discover it by creating a dummy file and finding its index!
-    wchar_t tempPath[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempPath);
-    wchar_t tempFile[MAX_PATH];
-    GetTempFileNameW(tempPath, L"ZMB", 0, tempFile);
-    HANDLE hDummy = CreateFileW(tempFile, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    // ---- DYNAMIC FILE TYPE DISCOVERY (Step 2: Find our dummy file in the OS snapshot) ----
     
     USHORT fileTypeIndex = 0;
     DWORD myPid = GetCurrentProcessId();
