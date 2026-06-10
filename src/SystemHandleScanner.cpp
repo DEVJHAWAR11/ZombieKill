@@ -123,8 +123,18 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
     // Cast our raw byte buffer into the structured array format defined in our header
     PSYSTEM_HANDLE_INFORMATION_EX handleInfo = (PSYSTEM_HANDLE_INFORMATION_EX)buffer.data();
 
+    // Cache process handles to drastically speed up the scan (avoids calling OpenProcess 100,000 times)
+    HANDLE hCurrentProcess = NULL;
+    ULONG_PTR currentPid = 0xFFFFFFFF; // Start with an invalid PID
+
     // Iterate through every single handle currently open in the entire OS (O(N) traversal)
     for (ULONG_PTR i = 0; i < handleInfo->NumberOfHandles; ++i) {
+        
+        // Print a progress indicator every 10,000 handles so the user knows it's not frozen!
+        if (i > 0 && i % 10000 == 0) {
+            std::wcout << L"Scanned " << i << L" out of " << handleInfo->NumberOfHandles << L" handles..." << std::endl;
+        }
+
         // Get a reference to the current handle entry
         SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX entry = handleInfo->Handles[i];
         
@@ -139,11 +149,17 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
         }
 
         // We need to duplicate the handle into our own process to query its name safely
-        // First, open a handle to the process that owns this handle
-        HANDLE hProcess = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, FALSE, (DWORD)entry.UniqueProcessId);
+        // If the PID changed, we need to open a new process handle
+        if (entry.UniqueProcessId != currentPid) {
+            if (hCurrentProcess != NULL) {
+                CloseHandle(hCurrentProcess); // Close the old one
+            }
+            currentPid = entry.UniqueProcessId;
+            hCurrentProcess = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, FALSE, (DWORD)currentPid);
+        }
         
         // If we couldn't open the process (maybe it's a highly protected system process)
-        if (!hProcess) {
+        if (!hCurrentProcess) {
             continue;
         }
 
@@ -152,7 +168,7 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
         
         // Ask the OS to copy the handle from the target process into our process
         BOOL dupSuccess = DuplicateHandle(
-            hProcess,
+            hCurrentProcess,
             (HANDLE)entry.HandleValue,
             GetCurrentProcess(),
             &hDup,
@@ -187,7 +203,6 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
             // If it is NOT a File, skip querying its name because querying named pipes/ports will HANG the thread forever!
             if (!isFile) {
                 CloseHandle(hDup);
-                CloseHandle(hProcess);
                 continue;
             }
 
@@ -237,8 +252,11 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
             // Close our duplicate handle so we don't leak kernel resources
             CloseHandle(hDup);
         }
-        // Close our handle to the target process
-        CloseHandle(hProcess);
+    }
+    
+    // Close the very last process handle if we opened one
+    if (hCurrentProcess != NULL) {
+        CloseHandle(hCurrentProcess);
     }
     
     // Return the array containing all the locks we found
