@@ -221,10 +221,7 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
             continue;
         }
 
-        // Skip handles with specific access rights that could cause the system to hang if queried
-        if (entry.GrantedAccess == 0x0012019f || entry.GrantedAccess == 0x001A019F || entry.GrantedAccess == 0x120189) {
-            continue;
-        }
+
 
         // We need to duplicate the handle into our own process to query its name safely
         // If the PID changed, we need to open a new process handle
