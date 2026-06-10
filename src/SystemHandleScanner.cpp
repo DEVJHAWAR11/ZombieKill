@@ -163,6 +163,34 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
 
         // If duplication succeeded
         if (dupSuccess && hDup != nullptr) {
+            // PREVENT HANGS: Query the object TYPE first (Class 2). This never hangs.
+            ULONG typeBufferSize = 1024;
+            std::vector<unsigned char> typeBuffer(typeBufferSize);
+            status = queryObject(hDup, 2, typeBuffer.data(), typeBufferSize, &returnLength);
+            
+            if (status == 0xC0000004) {
+                typeBuffer.resize(returnLength);
+                status = queryObject(hDup, 2, typeBuffer.data(), returnLength, &returnLength);
+            }
+            
+            bool isFile = false;
+            if (NT_SUCCESS(status)) {
+                PPUBLIC_OBJECT_TYPE_INFORMATION typeInfo = (PPUBLIC_OBJECT_TYPE_INFORMATION)typeBuffer.data();
+                if (typeInfo->TypeName.Length > 0 && typeInfo->TypeName.Buffer != nullptr) {
+                    std::wstring typeName(typeInfo->TypeName.Buffer, typeInfo->TypeName.Length / sizeof(wchar_t));
+                    if (typeName == L"File") {
+                        isFile = true; // Folders are also considered "File" at the kernel level
+                    }
+                }
+            }
+            
+            // If it is NOT a File, skip querying its name because querying named pipes/ports will HANG the thread forever!
+            if (!isFile) {
+                CloseHandle(hDup);
+                CloseHandle(hProcess);
+                continue;
+            }
+
             // Prepare a buffer to receive the name of the object this handle points to
             ULONG nameBufferSize = 1024;
             std::vector<unsigned char> nameBuffer(nameBufferSize);

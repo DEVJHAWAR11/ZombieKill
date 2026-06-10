@@ -43,6 +43,12 @@ typedef struct _PUBLIC_OBJECT_NAME_INFORMATION {
     UNICODE_STRING Name;
 } PUBLIC_OBJECT_NAME_INFORMATION, *PPUBLIC_OBJECT_NAME_INFORMATION;
 
+// Structure used to get the type of an object (to avoid hanging on pipes)
+typedef struct _PUBLIC_OBJECT_TYPE_INFORMATION {
+    UNICODE_STRING TypeName;
+    ULONG Reserved[22];
+} PUBLIC_OBJECT_TYPE_INFORMATION, *PPUBLIC_OBJECT_TYPE_INFORMATION;
+
 // Define the function pointer type for NtQuerySystemInformation, a hidden OS function
 typedef NTSTATUS (NTAPI *PNtQuerySystemInformation)(
     ULONG SystemInformationClass,
