@@ -68,6 +68,49 @@ std::wstring SystemHandleScanner::getNativeFilePath(const std::wstring& dosPath)
     return nativePath;
 }
 
+// ---- SAFE QUERY WRAPPER ----
+// To prevent the entire application from hanging when NtQueryObject gets stuck on a Named Pipe,
+// we spawn a worker thread. If it doesn't return in 20 milliseconds, we forcefully terminate it.
+struct QueryData {
+    HANDLE h;
+    unsigned char* buf;
+    ULONG bufSize;
+    ULONG retLen;
+    NTSTATUS status;
+    PNtQueryObject fn;
+};
+
+DWORD WINAPI QueryThreadProc(LPVOID param) {
+    QueryData* data = (QueryData*)param;
+    data->status = data->fn(data->h, 1, data->buf, data->bufSize, &data->retLen);
+    return 0;
+}
+
+NTSTATUS CallNtQueryObjectWithTimeout(PNtQueryObject queryObj, HANDLE hDup, std::vector<unsigned char>& buffer, ULONG& returnLength) {
+    QueryData qd;
+    qd.h = hDup;
+    qd.buf = buffer.data();
+    qd.bufSize = buffer.size();
+    qd.retLen = 0;
+    qd.status = -1;
+    qd.fn = queryObj;
+
+    HANDLE hThread = CreateThread(NULL, 0, QueryThreadProc, &qd, 0, NULL);
+    if (hThread) {
+        // Wait up to 20 milliseconds
+        if (WaitForSingleObject(hThread, 20) == WAIT_TIMEOUT) {
+            TerminateThread(hThread, 0); // Force kill the hanging thread!
+            CloseHandle(hThread);
+            return 0xC0000034; // Return a dummy error code so we skip this handle
+        }
+        CloseHandle(hThread);
+        returnLength = qd.retLen;
+        return qd.status;
+    }
+    return -1;
+}
+// ---- END SAFE WRAPPER ----
+
 // Main algorithm: Scans all OS handles to find which process is locking our target file
 std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& targetFilePath) {
     // Create an empty dynamic array (vector) to store the locks we find
@@ -218,14 +261,14 @@ std::vector<LockInfo> SystemHandleScanner::findLocksForFile(const std::wstring& 
             ULONG nameBufferSize = 1024;
             std::vector<unsigned char> nameBuffer(nameBufferSize);
             
-            // Ask the OS for the object's name (like the file path)
-            status = queryObject(hDup, 1, nameBuffer.data(), nameBufferSize, &returnLength);
+            // Call our safe wrapper that uses a thread and timeout to PREVENT HANGING on pipes!
+            status = CallNtQueryObjectWithTimeout(queryObject, hDup, nameBuffer, returnLength);
             
             // If the buffer was too small for the path string
             if (status == 0xC0000004) {
                 nameBuffer.resize(returnLength);
                 // Ask again with the larger, correct buffer size
-                status = queryObject(hDup, 1, nameBuffer.data(), returnLength, &returnLength);
+                status = CallNtQueryObjectWithTimeout(queryObject, hDup, nameBuffer, returnLength);
             }
 
             // If we successfully got the name
